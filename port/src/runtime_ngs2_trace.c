@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "runtime.h"
+#include "guest_cpu.h"
 
 #define MAX_KEYS 1024
 #define MAX_VOICES 8192
@@ -24,8 +25,6 @@
 #define POINTEE_BYTES 192
 #define MAX_LINKS 128
 
-typedef ABI int32_t (*Fn3)(uintptr_t, uintptr_t, uintptr_t);
-typedef ABI int32_t (*Fn5)(uintptr_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t);
 typedef struct { uint16_t size; int16_t next; uint32_t id; } ParamHeader;
 typedef struct { void *buffer; uint64_t size; uint32_t waveform, channels; } RenderBuffer;
 typedef struct {
@@ -51,6 +50,16 @@ static uint32_t first_render_count;
 static FILE *wav;
 static uint64_t wav_frames;
 static uintptr_t native[16];
+/* The firmware module's exports are guest code (x86-64): called through the guest CPU (guest_cpu.h:
+ * a plain call on x86-64 hosts, FEXCore elsewhere). */
+static int32_t native_call3(int f, uintptr_t a, uintptr_t b, uintptr_t c) {
+    const uint64_t args[3] = {a, b, c};
+    return (int32_t)guest_cpu_call(native[f], 3, args);
+}
+static int32_t native_call5(int f, uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d, uintptr_t e) {
+    const uint64_t args[5] = {a, b, c, d, e};
+    return (int32_t)guest_cpu_call(native[f], 5, args);
+}
 static struct { uint32_t from, to, port; uint64_t count; } links[MAX_LINKS]; /* PATCH: rack -> rack */
 static unsigned link_count;
 
@@ -224,7 +233,7 @@ static void finish(int index, int32_t result) {
 }
 
 static ABI int32_t t_sys_create(uintptr_t option, uintptr_t allocator, uintptr_t out) {
-    int32_t r = ((Fn3)native[F_SYS_CREATE_ALLOC])(option, allocator, out);
+    int32_t r = native_call3(F_SYS_CREATE_ALLOC, option, allocator, out);
     acquire();
     char line[200] = "";
     if (option) hex(line, sizeof(line), (const void *)option, 0x40);
@@ -234,12 +243,12 @@ static ABI int32_t t_sys_create(uintptr_t option, uintptr_t allocator, uintptr_t
     return r;
 }
 static ABI int32_t t_sys_destroy(uintptr_t system, uintptr_t info, uintptr_t c) {
-    int32_t r = ((Fn3)native[F_SYS_DESTROY])(system, info, c);
+    int32_t r = native_call3(F_SYS_DESTROY, system, info, c);
     acquire(); event("SystemDestroy %#" PRIxPTR, system); finish(F_SYS_DESTROY, r); write_summary(); release();
     return r;
 }
 static ABI int32_t t_render(uintptr_t system, uintptr_t buffers, uintptr_t count) {
-    int32_t r = ((Fn3)native[F_RENDER])(system, buffers, count);
+    int32_t r = native_call3(F_RENDER, system, buffers, count);
     acquire();
     const RenderBuffer *b = (const RenderBuffer *)buffers;
     if (!renders && b) {
@@ -259,7 +268,7 @@ static ABI int32_t t_render(uintptr_t system, uintptr_t buffers, uintptr_t count
     return r;
 }
 static ABI int32_t t_rack_query(uintptr_t rack_id, uintptr_t option, uintptr_t info) {
-    int32_t r = ((Fn3)native[F_RACK_QUERY])(rack_id, option, info);
+    int32_t r = native_call3(F_RACK_QUERY, rack_id, option, info);
     acquire();
     char line[400] = "";
     if (option) hex(line, sizeof(line), (const void *)option, 0x60);
@@ -277,22 +286,22 @@ static void rack_created(const char *what, uint32_t rack_id, uintptr_t option, u
     if (rack && rack_count < 256) { racks[rack_count].rack = rack; racks[rack_count++].rack_id = rack_id; }
 }
 static ABI int32_t t_rack_create(uintptr_t system, uintptr_t rack_id, uintptr_t option, uintptr_t buffer, uintptr_t out) {
-    int32_t r = ((Fn5)native[F_RACK_CREATE])(system, rack_id, option, buffer, out);
+    int32_t r = native_call5(F_RACK_CREATE, system, rack_id, option, buffer, out);
     acquire(); rack_created("RackCreate", (uint32_t)rack_id, option, out, r); finish(F_RACK_CREATE, r); release();
     return r;
 }
 static ABI int32_t t_rack_create_alloc(uintptr_t system, uintptr_t rack_id, uintptr_t option, uintptr_t allocator, uintptr_t out) {
-    int32_t r = ((Fn5)native[F_RACK_CREATE_ALLOC])(system, rack_id, option, allocator, out);
+    int32_t r = native_call5(F_RACK_CREATE_ALLOC, system, rack_id, option, allocator, out);
     acquire(); rack_created("RackCreateWithAllocator", (uint32_t)rack_id, option, out, r); finish(F_RACK_CREATE_ALLOC, r); release();
     return r;
 }
 static ABI int32_t t_rack_destroy(uintptr_t rack, uintptr_t info, uintptr_t c) {
-    int32_t r = ((Fn3)native[F_RACK_DESTROY])(rack, info, c);
+    int32_t r = native_call3(F_RACK_DESTROY, rack, info, c);
     acquire(); event("RackDestroy id 0x%04x", rack_of(rack)); finish(F_RACK_DESTROY, r); release();
     return r;
 }
 static ABI int32_t t_voice_handle(uintptr_t rack, uintptr_t index, uintptr_t out) {
-    int32_t r = ((Fn3)native[F_VOICE_HANDLE])(rack, index, out);
+    int32_t r = native_call3(F_VOICE_HANDLE, rack, index, out);
     acquire();
     if (!r && out) remember_voice(*(uintptr_t *)out, rack_of(rack), (uint32_t)index);
     finish(F_VOICE_HANDLE, r);
@@ -311,12 +320,12 @@ static ABI int32_t t_voice_control(uintptr_t voice, uintptr_t params, uintptr_t 
         p += h->next;
     }
     release();
-    int32_t r = ((Fn3)native[F_VOICE_CONTROL])(voice, params, c);
+    int32_t r = native_call3(F_VOICE_CONTROL, voice, params, c);
     acquire(); finish(F_VOICE_CONTROL, r); release();
     return r;
 }
 static ABI int32_t t_voice_state(uintptr_t voice, uintptr_t state, uintptr_t size) {
-    int32_t r = ((Fn3)native[F_VOICE_STATE])(voice, state, size);
+    int32_t r = native_call3(F_VOICE_STATE, voice, state, size);
     acquire();
     for (int i = 0; i < 8; ++i)
         if (!state_sizes[i][1] || state_sizes[i][0] == size) { state_sizes[i][0] = size; ++state_sizes[i][1]; break; }

@@ -45,8 +45,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#if defined(__x86_64__)
 #include <xmmintrin.h>
+#endif
 #include "third_party/LibAtrac9/C/src/libatrac9.h"
+#include "guest_cpu.h"
 
 #define NGS2_OK 0
 #define NGS2_ERR_HANDLE ((int32_t)0x804A0230)
@@ -998,6 +1001,31 @@ static void voice_free(Voice *v) {
     v->magic = 0;
 }
 
+/* Denormals flushed to zero while mixing, the previous mode restored after. x86-64: MXCSR FTZ | DAZ
+ * (0x8040). aarch64: FPCR.FZ (bit 24), which flushes both inputs and results. */
+#if defined(__x86_64__)
+typedef unsigned int FpMode;
+static FpMode flush_denormals(void) {
+    const unsigned int csr = _mm_getcsr();
+    _mm_setcsr(csr | 0x8040);
+    return csr;
+}
+static void restore_fp_mode(FpMode mode) { _mm_setcsr(mode); }
+#elif defined(__aarch64__)
+typedef uint64_t FpMode;
+static FpMode flush_denormals(void) {
+    uint64_t fpcr;
+    __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
+    __asm__ volatile("msr fpcr, %0" : : "r"(fpcr | (UINT64_C(1) << 24)));
+    return fpcr;
+}
+static void restore_fp_mode(FpMode mode) { __asm__ volatile("msr fpcr, %0" : : "r"(mode)); }
+#else
+typedef int FpMode;
+static FpMode flush_denormals(void) { return 0; }
+static void restore_fp_mode(FpMode mode) { (void)mode; }
+#endif
+
 /* Guest allocator: ask for a small context buffer so the game's accounting sees the object.
  * The mixer itself lives in host memory. */
 static void guest_alloc(const Allocator *a, BufferInfo *info, uint64_t size) {
@@ -1005,11 +1033,15 @@ static void guest_alloc(const Allocator *a, BufferInfo *info, uint64_t size) {
     info->host_size = size;
     if (!a || !a->alloc) return;
     info->user_data = a->user_data;
-    int32_t r = a->alloc(info);
+    const uint64_t argument = (uint64_t)(uintptr_t)info;
+    int32_t r = (int32_t)guest_cpu_call((uintptr_t)a->alloc, 1, &argument);
     if (r) note("guest allocator returned 0x%08x", (uint32_t)r);
 }
 static void guest_free(const Allocator *a, BufferInfo *info) {
-    if (a && a->free && info->host_buffer) a->free(info);
+    if (a && a->free && info->host_buffer) {
+        const uint64_t argument = (uint64_t)(uintptr_t)info;
+        guest_cpu_call((uintptr_t)a->free, 1, &argument);
+    }
 }
 
 #define CONTEXT_BUFFER_SIZE 0x1000
@@ -1621,7 +1653,8 @@ static void block_end(Voice *v) {
     int repeat = b->repeats != 0;
     if (v->callback && (v->callback_flags & (repeat ? 2u : 1u))) {
         CallbackInfo info = {v->callback_data, voice_handle(v), repeat ? 2u : 1u, 0, b->user, b->data, b->size, s->repeated, 0, 0};
-        v->callback(&info);
+        const uint64_t argument = (uint64_t)(uintptr_t)&info;
+        guest_cpu_call((uintptr_t)v->callback, 1, &argument);
     }
     if (repeat) {
         if (b->repeats != UINT32_MAX) --b->repeats;
@@ -1847,7 +1880,8 @@ static void call_user_fx(Voice *v, float data[MAX_CH][MAX_GRAIN], uint32_t n) {
     /* Guest code may take its own locks while another game thread holding them waits in
      * VoiceControl: run it without the mixer lock. */
     pthread_mutex_unlock(&lock);
-    handler(&context);
+    const uint64_t argument = (uint64_t)(uintptr_t)&context;
+    guest_cpu_call((uintptr_t)handler, 1, &argument);
     pthread_mutex_lock(&lock);
 }
 static float peak_of(float data[MAX_CH][MAX_GRAIN], uint32_t channels, uint32_t n) {
@@ -2022,9 +2056,8 @@ static ABI int32_t ngs2_render(uintptr_t handle, const RenderBuffer *buffers, ui
     uint32_t n = s->grain;
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
-    /* Flush denormals (reverb and filter tails) to zero while mixing: 0x8040 = FTZ | DAZ. */
-    unsigned int csr = _mm_getcsr();
-    _mm_setcsr(csr | 0x8040);
+    /* Flush denormals (reverb and filter tails) to zero while mixing. */
+    const FpMode fp_mode = flush_denormals();
     memset(outputs, 0, sizeof(outputs));
     memset(output_channels, 0, sizeof(output_channels));
     for (Rack *r = s->racks; r; r = r->next) {
@@ -2049,7 +2082,7 @@ static ABI int32_t ngs2_render(uintptr_t handle, const RenderBuffer *buffers, ui
         if (!(s->renders % 500)) wav_update();
     }
     ++s->renders;
-    _mm_setcsr(csr);
+    restore_fp_mode(fp_mode);
     clock_gettime(CLOCK_MONOTONIC, &t1);
     double ns = (double)(t1.tv_sec - t0.tv_sec) * 1e9 + (double)(t1.tv_nsec - t0.tv_nsec);
     stat_render_ns += ns;

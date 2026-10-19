@@ -28,12 +28,19 @@ PORT_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).r
 REPO_DIR = PORT_DIR.parent
 sys.path.insert(0, str(PORT_DIR / 'scripts'))
 import mod_patches  # noqa: E402
-OUT_DIR = PORT_DIR / 'out'
-USER_DIR = PORT_DIR / 'user'
+# A package that cannot write next to itself (the Linux AppImage, packaging/default.nix: a read-only
+# Nix store) keeps the generated files in its data folder, GR2_OUT_DIR, the default saves folder in
+# GR2_DEFAULT_USER_DIR, the console's libSceNgs2.sprx in GR2_SYSTEM_LIB_DIR, and names its loader
+# in GR2_PROBE.
+PACKAGED = bool(os.environ.get('GR2_OUT_DIR'))
+OUT_DIR = Path(os.environ['GR2_OUT_DIR']) if PACKAGED else PORT_DIR / 'out'
+USER_DIR = (Path(os.environ['GR2_DEFAULT_USER_DIR']).expanduser() if os.environ.get('GR2_DEFAULT_USER_DIR')
+            else PORT_DIR / 'user')
 MODS_DIR = USER_DIR / 'mods'          # shadPS4/GoldHEN cheat XML files the player drops in
 MODS_CONFIG = USER_DIR / 'mods.json'  # {"enabled": [...], "disabled": [...]}
 LOG_DIR = OUT_DIR / 'logs'
-PROBE = OUT_DIR / ('tlg-probe.exe' if os.name == 'nt' else 'tlg-probe')
+PROBE = (Path(os.environ['GR2_PROBE']) if os.environ.get('GR2_PROBE')
+         else OUT_DIR / ('tlg-probe.exe' if os.name == 'nt' else 'tlg-probe'))
 KEEP_LOGS = 30
 
 # Game language: PS4 system language ids the game ships voice/text archives for.
@@ -55,8 +62,9 @@ DEFAULT_ENV = {
 DEFAULT_SETTINGS = {
     # Source tree: the merged game view and the console modules of ~/decomp. Package: the player
     # picks the game folder; libSceNgs2.sprx goes in system_lib/ next to the executable.
-    'game_dir': '' if FROZEN else str(REPO_DIR / 'game' / 'CUSA03694'),
-    'system_lib_dir': str(PORT_DIR / 'system_lib') if FROZEN else str(REPO_DIR / 'dump' / 'system_lib'),
+    'game_dir': '' if FROZEN or PACKAGED else str(REPO_DIR / 'game' / 'CUSA03694'),
+    'system_lib_dir': (os.environ.get('GR2_SYSTEM_LIB_DIR') or str(PORT_DIR / 'system_lib')) if FROZEN or PACKAGED
+                      else str(REPO_DIR / 'dump' / 'system_lib'),
     'gs_outline_off': True,        # TLG_SKIP_ADJACENCY: no black streaks (outline pass)
     'game_language': 'pt_BR',
     'ui_language': 'auto',         # auto | pt_BR | en_US
@@ -356,6 +364,11 @@ def window_icon(settings):
 
 def build_env(settings, extra=None):
     env = dict(os.environ)
+    env.pop('GR2_LAUNCHER_WAITS_FOR_GAME', None)   # the launcher's own (wait_for_games), not the game's
+    if PACKAGED:
+        # The Vulkan loader's own errors (a driver manifest or library that does not load) in the
+        # run log: without a loadable driver the game only reports a missing VK_KHR_surface.
+        env.setdefault('VK_LOADER_DEBUG', 'error')
     for key, value in DEFAULT_ENV.items():
         env.setdefault(key, value)  # explicit TLG_* in the environment always win
     env['TLG_GC_BUDGET_MB'] = os.environ.get('TLG_GC_BUDGET_MB', str(int(settings['vram_budget_mb'])))
@@ -388,6 +401,23 @@ def build_env(settings, extra=None):
     if extra:
         env.update(extra)
     return env
+
+
+def run_log_header(env=None):
+    """The first lines of a run log: which Vulkan drivers the game is given (the package's
+    tlg_vulkan.py choice and the loader's variables, each manifest marked when it is missing)."""
+    env = os.environ if env is None else env
+    lines = []
+    if env.get('TLG_VULKAN_SELECTION'):
+        lines.append(env['TLG_VULKAN_SELECTION'])
+    for key in ('VK_DRIVER_FILES', 'VK_ICD_FILENAMES', 'VK_ADD_DRIVER_FILES'):
+        if env.get(key):
+            files = [item for item in env[key].split(os.pathsep) if item]
+            marked = [item + ('' if Path(item).exists() else ' (missing)') for item in files]
+            lines.append(f'{key}: ' + ', '.join(marked))
+    if not lines:
+        lines.append('Vulkan: the system loader\'s default drivers')
+    return ''.join(line + '\n' for line in lines)
 
 
 def new_log():
@@ -423,7 +453,33 @@ def launch(settings, seconds=0, extra_env=None):
     process = subprocess.Popen(cmd, cwd=str(USER_DIR), env=build_env(settings, extra_env),
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                encoding='utf-8', errors='replace', bufsize=1)
+    _GAMES[:] = [game for game in _GAMES if game.poll() is None] + [process]
     return process, log
+
+
+# The games launch() started, for wait_for_games() when the launcher's process exits.
+_GAMES = []
+
+
+def wait_for_games():
+    """The launcher's last step before its process exits. In the Linux AppImage the game's own
+    files (its program and libraries, the Vulkan drivers) are mounted for the launcher's process
+    only: the AppImage removes the mount when that process exits, and a game still running from it
+    then dies the next time it needs a page of its code that is not in memory yet (SIGBUS, in a
+    different library each time). There the launcher keeps its process, with no window, until the
+    games it started have exited (its log thread keeps copying their output meanwhile).
+    packaging/default.nix sets GR2_LAUNCHER_WAITS_FOR_GAME=1; elsewhere the launcher exits at once."""
+    if os.environ.get('GR2_LAUNCHER_WAITS_FOR_GAME') != '1':
+        return
+    running = [process for process in _GAMES if process.poll() is None]
+    if running:
+        print('Launcher closed; its process stays until the game exits (the game runs from the '
+              "package's files, mounted for this process)", file=sys.stderr, flush=True)
+    try:
+        for process in running:
+            process.wait()
+    except KeyboardInterrupt:   # Ctrl+C in the terminal: leave now
+        pass
 
 
 def main(argv=None):
@@ -450,6 +506,9 @@ def main(argv=None):
     process, log = launch(settings, seconds)
     print(f'Rodando (log: {log})', flush=True)
     with open(log, 'w', encoding='utf-8') as out:
+        header = run_log_header()
+        sys.stdout.write(header)
+        out.write(header)
         for line in process.stdout:
             sys.stdout.write(line)
             out.write(line)

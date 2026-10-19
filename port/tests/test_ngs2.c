@@ -10,9 +10,18 @@
 #include <string.h>
 #include <time.h>
 #include "runtime.h"
+#include "guest_cpu.h"
 
 /* runtime_ngs2.c resolves through runtime_lookup; the tests call it by symbol instead. */
 uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *nid) { (void)table; (void)count; (void)nid; return 0; }
+/* The mixer calls the game's handlers (allocator, user FX, voice callbacks) through guest_cpu.h;
+ * here they are host functions standing in for the game's, on every host (no guest CPU linked). */
+uint64_t guest_cpu_call(uintptr_t fn, unsigned count, const uint64_t *args) {
+    typedef uint64_t (ABI *Fn)(uint64_t, uint64_t, uint64_t);
+    uint64_t a[3] = {0, 0, 0};
+    for (unsigned i = 0; i < count && i < 3; ++i) a[i] = args[i];
+    return ((Fn)fn)(a[0], a[1], a[2]);
+}
 
 typedef struct { void *buffer; uint64_t size; uint32_t waveform, channels; } RenderBuffer;
 typedef struct { void *host_buffer; uint64_t host_size; uintptr_t reserved[5]; uintptr_t user_data; } BufferInfo;

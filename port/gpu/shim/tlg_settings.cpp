@@ -107,6 +107,8 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.rcas_strength = TlgGraphics::ParseRcasStrength(value.empty() ? -1 : i);
     } else if (key == "frames_queued") {
         v.frames_queued = TlgGraphics::ParseFramesQueued(value.empty() ? -1 : i);
+    } else if (key == "scene_res") {
+        v.scene_res = TlgGraphics::ParseSceneResolution(value);
     } else if (key == "render_resolution") {
         v.render_resolution = TlgGraphics::ParseResolution(value);
     } else if (key == "engine_fps") {
@@ -184,7 +186,7 @@ void Load() {
         {"TLG_ASYNC_SHADERS", "async_shaders"},      {"TLG_DEFERRED_READBACK", "deferred_readback"},
         {"TLG_STALE_READBACK", "stale_readback"},     {"TLG_FSR1", "fsr1"},
         {"TLG_RCAS", "rcas"},                        {"TLG_FRAMES_AHEAD", "frames_queued"},
-        {"TLG_SHOW_FPS", "show_fps"},
+        {"TLG_SHOW_FPS", "show_fps"},             {"TLG_SCENE_RES", "scene_res"},
     };
     for (const auto& [env, key] : env_keys) {
         if (const char* value = std::getenv(env); value && value[0]) {
@@ -310,6 +312,9 @@ void Save() {
                  TlgGraphics::Resolutions[std::clamp(v.render_resolution.load(), 0, 5)].data(),
                  v.engine_fps.load(), int(v.deferred_readback.load()), int(v.stale_readback.load()),
                  int(v.restart_unconfirmed.load()));
+    std::fprintf(file, "scene_res=%s\n",
+                 TlgGraphics::SceneResolutions[std::clamp(v.scene_res.load(), 0,
+                     int(TlgGraphics::SceneResolutions.size()) - 1)].data());
     // Read by run.sh at start.
     std::fprintf(file, "live_resolution=%s\n", v.live_resolution < 0 ? "auto"
                                                   : v.live_resolution ? "1" : "0");

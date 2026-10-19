@@ -1,6 +1,7 @@
 /* System-library functions first needed by Gravity Rush 2 (CUSA03694 v1.00).
  *
- * Fibers are a complete implementation (ucontext on the game's own context memory). The rest are
+ * Fibers are a complete implementation (ucontext on the game's own context memory; on hosts whose
+ * guest CPU is not the host's, guest contexts: runtime_gr2_fiber.c). The rest are
  * small contracts of a console without extra content, network or optional features: content
  * search/export/delete, error dialogs, temporary data, kernel queries, POSIX sockets. Image
  * codecs log their first use; they are filled in when the game is seen using them. libSecure is
@@ -8,6 +9,8 @@
  */
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "guest_cpu.h"
+#include "runtime_gr2_fiber.h"
 #include <errno.h>
 #include <pthread.h>
 #include <sched.h>
@@ -110,14 +113,9 @@ static ABI int32_t socket_down(void) {
     return -1;
 }
 
-/* ---- Fibers ---- */
-#define FIBER_MAGIC UINT64_C(0x5245424946325247) /* "GR2FIBER" */
-#define FIBER_ERR_NULL ((int32_t)0x80590001)
-#define FIBER_ERR_INVALID ((int32_t)0x80590004)
-#define FIBER_ERR_PERMISSION ((int32_t)0x80590005)
-#define FIBER_ERR_STATE ((int32_t)0x80590006)
+/* ---- Fibers (FIBER_MAGIC and the error codes: runtime_gr2_fiber.h) ---- */
 typedef void (ABI *FiberEntry)(uint64_t arg_on_initialize,uint64_t arg_on_run);
-#ifndef _WIN32
+#if !defined(_WIN32) && defined(GUEST_CPU_NATIVE)
 typedef struct HostFiber {
     ucontext_t context;
     FiberEntry entry;
@@ -211,6 +209,23 @@ static ABI int32_t fiber_return_to_thread(uint64_t arg_on_return,uint64_t *arg_o
     fiber_tls.current=NULL;
     swapcontext(&from->context,&fiber_tls.thread_context);
     return 0;
+}
+#elif defined(GR2_FIBER_GUEST_CONTEXT)
+/* Other hosts (aarch64): the game's code runs in FEXCore's JIT, one host stack per thread, and a
+ * fiber is a guest context of that thread (runtime_gr2_fiber.c). */
+static ABI int32_t fiber_initialize(void *guest,const char *name,FiberEntry entry,uint64_t arg_on_initialize,
+                                    void *context,uint64_t context_size,const void *option,uint32_t build_version) {
+    return gr2_fiber_initialize(guest,name,(uintptr_t)entry,arg_on_initialize,context,context_size,option,build_version);
+}
+static ABI int32_t fiber_finalize(void *guest) { return gr2_fiber_finalize(guest); }
+static ABI int32_t fiber_run(void *guest,uint64_t arg_on_run_to,uint64_t *arg_on_return) {
+    return gr2_fiber_run(guest,arg_on_run_to,arg_on_return);
+}
+static ABI int32_t fiber_switch(void *guest,uint64_t arg_on_run_to,uint64_t *arg_on_run) {
+    return gr2_fiber_switch(guest,arg_on_run_to,arg_on_run);
+}
+static ABI int32_t fiber_return_to_thread(uint64_t arg_on_return,uint64_t *arg_on_run) {
+    return gr2_fiber_return_to_thread(arg_on_return,arg_on_run);
 }
 #else
 /* Windows: Win32 fibers. Each fiber gets its own stack from the system (the game's context

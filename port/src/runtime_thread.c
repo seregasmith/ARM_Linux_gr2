@@ -7,6 +7,7 @@
  * the same 9-byte instruction with another displacement. */
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "guest_cpu.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,7 +22,6 @@
 #else
 #include <sys/syscall.h>
 #include <sys/mman.h>
-#include <asm/prctl.h>
 #endif
 #define ERR(n) ((int32_t)(UINT32_C(0x80020000)|(n)))
 #define ATTR_MAGIC UINT32_C(0x41545452)
@@ -48,6 +48,14 @@ typedef struct GuestThread {
     char name[32];
     int detached, finished, joined, host_owned;
     uint64_t os_tid;  /* freeze report: matches the OS thread list */
+#ifndef GUEST_CPU_NATIVE
+    /* aarch64 (FEXCore): the creator's SSE (MXCSR) and x87 control words, which the new guest
+     * thread starts with (FreeBSD's libthr, and Linux on x86-64 by clone; the guest CPU starts a
+     * thread at the defaults otherwise), and the guest code's own stack. */
+    uint32_t fp_mxcsr; uint16_t fp_x87cw;
+    unsigned char *guest_stack; /* separate from the host stack: that one holds the guest CPU's frames */
+    size_t guest_stack_size;
+#endif
     RuntimeWait wait; /* freeze report: what the thread is blocked on */
 #ifdef _WIN32
     tlg_jmp_buf exit_jump; /* no SEH unwinding through guest frames */
@@ -86,9 +94,8 @@ static void set_gs(void *base) {
 }
 #define tls_block_alloc(size) _aligned_malloc(size,64)
 #else
-static void set_gs(void *base) {
-    if (syscall(SYS_arch_prctl,ARCH_SET_GS,(unsigned long)base)) { perror("STOP: arch_prctl(ARCH_SET_GS)"); exit(21); }
-}
+/* GS base of the guest CPU: arch_prctl on x86-64 hosts, FEXCore's state elsewhere (guest_cpu.h). */
+static void set_gs(void *base) { guest_cpu_set_gs(base); }
 #define tls_block_alloc(size) aligned_alloc(64,size)
 #endif
 static uint64_t os_thread_id(void) {
@@ -365,8 +372,15 @@ static void *host_start(void *p) {
     attach(t);
     if (thread_start_hook) thread_start_hook();
     set_host_name(t->name);
-    if (!exit_setjmp(t)) t->result=t->entry(t->argument);
+#ifndef GUEST_CPU_NATIVE
+    guest_cpu_set_fp_control(t->fp_mxcsr,t->fp_x87cw);
+    if (t->guest_stack) guest_cpu_thread_stack(t->guest_stack+t->guest_stack_size,t->guest_stack_size);
+#endif
+    const uint64_t argument=(uint64_t)(uintptr_t)t->argument;
+    if (!exit_setjmp(t)) t->result=(void *)(uintptr_t)guest_cpu_call((uintptr_t)t->entry,1,&argument);
+    else guest_cpu_abandon();
     runtime_thread_keys_cleanup();
+    guest_cpu_thread_end();
     pthread_mutex_lock(&lock); t->finished=1; ++exited; pthread_mutex_unlock(&lock);
     return t->result;
 }
@@ -378,6 +392,9 @@ static int32_t create(GuestThread **out,ThreadAttr **attr_slot,GuestEntry entry,
     if (!t) return ERR(12);
     if (a) { t->attr=*a; t->attr.next=NULL; }
     t->entry=entry; t->argument=argument; t->detached=t->attr.detached;
+#ifndef GUEST_CPU_NATIVE
+    guest_cpu_fp_control(&t->fp_mxcsr,&t->fp_x87cw);
+#endif
     snprintf(t->name,sizeof(t->name),"%s",name ? name : "guest");
     pthread_attr_t host;
     pthread_attr_init(&host);
@@ -392,6 +409,12 @@ static int32_t create(GuestThread **out,ThreadAttr **attr_slot,GuestEntry entry,
     void *stack_memory=runtime_low_map(stack_bytes,PROT_READ|PROT_WRITE);
     if (stack_memory) pthread_attr_setstack(&host,stack_memory,stack_bytes);
     else pthread_attr_setstacksize(&host,stack_bytes);
+#ifndef GUEST_CPU_NATIVE
+    /* The guest code has a stack of its own: the host's holds the guest CPU's frames. */
+    t->guest_stack=runtime_low_map((size_t)stack,PROT_READ|PROT_WRITE);
+    if (!t->guest_stack) { fputs("STOP: cannot allocate a guest thread stack\n",stderr); exit(21); }
+    t->guest_stack_size=(size_t)stack;
+#endif
 #endif
     publish(t);
     /* Publish the handle before the thread can run and inspect itself. */

@@ -428,6 +428,10 @@ class Launcher:
             return
         self.lines.put(f"{self.t('running')} {log}")
         with open(log, 'w', encoding='utf-8') as out:
+            header = tlg_run.run_log_header()
+            out.write(header)
+            for line in header.splitlines():
+                self.lines.put(line)
             for line in self.process.stdout:
                 out.write(line)
                 out.flush()
@@ -479,6 +483,7 @@ def main():
         pass
     Launcher(root)
     root.mainloop()
+    tlg_run.wait_for_games()   # Linux AppImage: the game runs from files mounted for this process
 
 
 if __name__ == '__main__':

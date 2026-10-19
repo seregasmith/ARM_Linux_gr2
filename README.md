@@ -40,6 +40,14 @@ Por **HayatoG** · YouTube [@hayatog-dev](https://www.youtube.com/@hayatog-dev) 
 
 ## Status
 
+### Linux ARM
+WIP
+
+Freezes on Fast FEX preset when you starting mining at start.
+Set TSO, Multiblock, Memcpy and Half Barrier only enabled to go through an issue. But it freezes again after comics part. 
+Default Driver only on Armada OS
+
+### PC PART
 | Área | Estado |
 |---|---|
 | Boot, abertura com créditos e legendas | ✅ Funciona |
