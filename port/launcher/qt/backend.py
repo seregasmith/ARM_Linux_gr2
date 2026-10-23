@@ -192,6 +192,7 @@ class Backend(QObject):
         """probes: optional dict of callables replacing the slow/hardware ones (tests, screenshots)."""
         super().__init__()
         self.langChanged.connect(self.gameLanguageChanged)   # 'Automatic: <name>' follows the interface language
+        self.gameDirChanged.connect(self.gameLanguageChanged)  # another copy, its own languages
         self.settings = tlg_run.load_settings() if settings is None else settings
         self.t_ = translator or logic.Translator(self.settings)
         self.probes = probes or {}
@@ -573,27 +574,32 @@ class Backend(QObject):
         return any(self.fix_states.get(i.id) is not None and i.shader for i in logic.fix_items())
 
     # -- game language (voice and text; the interface language above is separate) ---------------
-    @Property('QVariantList', notify=langChanged)
+    def _game_languages(self):
+        """The languages of the copy in the game folder (gr2_run.game_languages: per TITLE_ID)."""
+        return list(tlg_run.game_languages(self.settings.get('game_dir', '')))
+
+    @Property('QVariantList', notify=gameLanguageChanged)
     def gameLanguageOptions(self):
-        """'Automatic' first, then the six languages in the order of gr2_run.GAME_LANGUAGES."""
+        """'Automatic' first, then the languages of the copy in the game folder (its table's order)."""
         return [{'value': 'auto', 'label': self.t_('game_language_auto')}] + [
-            {'value': k, 'label': logic.GAME_LANGUAGE_NAMES.get(k, k)} for k in tlg_run.GAME_LANGUAGES]
+            {'value': k, 'label': logic.GAME_LANGUAGE_NAMES.get(k, k)} for k in self._game_languages()]
 
     @Property(int, notify=gameLanguageChanged)
     def gameLanguageIndex(self):
-        keys = ['auto'] + list(tlg_run.GAME_LANGUAGES)
+        keys = ['auto'] + self._game_languages()
         return keys.index(self.settings.get('game_language')) if self.settings.get('game_language') in keys else 0
 
     @Property(str, notify=gameLanguageChanged)
     def gameLanguageNow(self):
-        """'Automatic: Português (Brasil)' while 'auto' is active, else empty."""
-        if self.settings.get('game_language', 'auto') in tlg_run.GAME_LANGUAGES:
+        """'Automatic: Português (Brasil)' while 'auto' (or a language this copy lacks) is active, else empty."""
+        if self.settings.get('game_language', 'auto') in self._game_languages():
             return ''
-        return self.t_('game_language_now', name=logic.GAME_LANGUAGE_NAMES[tlg_run.resolve_game_language(self.settings)])
+        key = tlg_run.resolve_game_language(self.settings)
+        return self.t_('game_language_now', name=logic.GAME_LANGUAGE_NAMES.get(key, key))
 
     @Slot(str)
     def setGameLanguage(self, key):
-        if key != 'auto' and key not in tlg_run.GAME_LANGUAGES:
+        if key != 'auto' and key not in self._game_languages():
             return
         self.settings['game_language'] = key   # build_env reads it at the next start (GR2_LANGUAGE)
         tlg_run.save_settings(self.settings)

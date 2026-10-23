@@ -45,15 +45,34 @@ PROBE = (Path(os.environ['GR2_PROBE']) if os.environ.get('GR2_PROBE')
          else OUT_DIR / ('tlg-probe.exe' if os.name == 'nt' else 'tlg-probe'))
 KEEP_LOGS = 30
 
-# Game language: PS4 system language ids the game ships voice/text archives for.
-GAME_LANGUAGES = {'en': 1, 'pt_BR': 17, 'es_LA': 20, 'fr_CA': 22}
-_LANGUAGE_PREFIX = {'pt': 'pt_BR', 'es': 'es_LA', 'fr': 'fr_CA'}
+# Game language: the id sceSystemServiceParamGetInt(LANG) answers (TLG_LANGUAGE), numbered as the
+# PS4 system numbers its languages (1 English, 8 Russian, 17 Brazilian Portuguese...). Each release
+# ships its own subset; the launchers list the one of the copy in the game folder (param.sfo
+# TITLE_ID), the US one while the copy is unknown.
+LANGUAGES_US = {'en': 1, 'pt_BR': 17, 'es_LA': 20, 'fr_CA': 22}
+# The European copy (CUSA04943): Russian, as a player's copy shows; the rest of its languages come
+# from tools/gr2_languages.py run on that copy.
+LANGUAGES_EU = {'en': 1, 'ru': 8}
+LANGUAGES_BY_TITLE = {'CUSA03694': LANGUAGES_US, 'CUSA04943': LANGUAGES_EU}
+GAME_LANGUAGES = LANGUAGES_US  # the US copy's table (older callers)
 
 
-def system_game_language(environ=None):
+def game_title(game_dir=''):
+    """TITLE_ID of the copy in game_dir (param.sfo), or None."""
+    return shader_cache.title_id(game_dir) if game_dir else None
+
+
+def game_languages(game_dir=''):
+    """The languages (code -> id) the copy in game_dir ships; the US copy's while it is unknown."""
+    return LANGUAGES_BY_TITLE.get(game_title(game_dir), LANGUAGES_US)
+
+
+def system_game_language(environ=None, game_dir=''):
     """The game language that follows the system one: LC_ALL, LC_MESSAGES, LANG, then the Python
-    locale and, on Windows, the user's default locale name. pt (also pt_PT) is pt_BR, es is
-    es_LA, fr is fr_CA, anything else is English (the Qt launcher, ported from infamous_pc)."""
+    locale and, on Windows, the user's default locale name, matched by language against the copy's
+    languages: pt (also pt_PT) is pt_BR and es is es_LA on the US copy, ru is Russian on the
+    European one. Anything the copy does not ship is English (the Qt launcher, ported from
+    infamous_pc)."""
     environ = os.environ if environ is None else environ
     code = ''
     for name in ('LC_ALL', 'LC_MESSAGES', 'LANG'):
@@ -74,14 +93,20 @@ def system_game_language(environ=None):
                 code = buf.value
         except Exception:
             code = ''
-    return _LANGUAGE_PREFIX.get(re.split(r'[_\-.@]', code.strip().lower())[0], 'en')
+    system = re.split(r'[_\-.@]', code.strip().lower())[0]
+    table = game_languages(game_dir)
+    for key in table:
+        if key.split('_')[0].lower() == system:
+            return key
+    return 'en' if 'en' in table else next(iter(table))
 
 
 def resolve_game_language(settings, environ=None):
-    """settings['game_language'] when it is one of GAME_LANGUAGES; 'auto' (or anything unknown)
-    follows the system."""
+    """settings['game_language'] when the copy in the game folder ships it; 'auto', a language of
+    another copy or anything unknown follows the system."""
     choice = settings.get('game_language', 'auto')
-    return choice if choice in GAME_LANGUAGES else system_game_language(environ)
+    game_dir = settings.get('game_dir', '')
+    return choice if choice in game_languages(game_dir) else system_game_language(environ, game_dir)
 
 
 def user_dir():
@@ -475,7 +500,8 @@ def build_env(settings, extra=None):
     for key, value in DEFAULT_ENV.items():
         env.setdefault(key, value)  # explicit TLG_* in the environment always win
     env['TLG_GC_BUDGET_MB'] = os.environ.get('TLG_GC_BUDGET_MB', str(int(settings['vram_budget_mb'])))
-    env['TLG_LANGUAGE'] = os.environ.get('TLG_LANGUAGE', str(GAME_LANGUAGES.get(settings['game_language'], 1)))
+    env['TLG_LANGUAGE'] = os.environ.get('TLG_LANGUAGE', str(
+        game_languages(settings.get('game_dir', '')).get(resolve_game_language(settings), 1)))
     if settings.get('ui_language', 'auto') != 'auto':
         env['TLG_UI_LANG'] = settings['ui_language']
     # Without the console module the port's own mixer (runtime_ngs2.c) plays the audio.

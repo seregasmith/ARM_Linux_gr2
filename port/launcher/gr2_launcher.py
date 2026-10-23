@@ -90,7 +90,7 @@ TEXT = {
 CHANNEL_URL = 'https://www.youtube.com/@hayatog-dev'
 DISCORD_URL = 'https://discord.gg/UMkdMYZh9g'
 GAME_LANGUAGE_NAMES = {'en': 'English', 'pt_BR': 'Português (Brasil)', 'es_LA': 'Español (Latinoamérica)',
-                       'fr_CA': 'Français (Canada)'}
+                       'fr_CA': 'Français (Canada)', 'ru': 'Русский'}
 UI_LANGUAGES = ['auto', 'pt_BR', 'en_US']
 UI_LANGUAGE_NAMES = {'pt_BR': 'Português (Brasil)', 'en_US': 'English (US)'}
 DISPLAY_MODES = ['Windowed', 'Borderless', 'Fullscreen']
@@ -156,7 +156,8 @@ class Launcher:
         titles = ttk.Frame(header)
         titles.pack(side='left', fill='y')
         ttk.Label(titles, text='Gravity Rush 2', font=('TkDefaultFont', 22, 'bold')).pack(anchor='w')
-        ttk.Label(titles, text='PC — CUSA03694 v1.00', foreground='#777').pack(anchor='w')
+        self.title_label = ttk.Label(titles, text=self.copy_text(), foreground='#777')
+        self.title_label.pack(anchor='w')
         credits = ttk.Frame(header)
         credits.pack(side='right', anchor='ne')
         ttk.Label(credits, text=self.t('port_by'), foreground='#777').pack(anchor='e')
@@ -193,7 +194,9 @@ class Launcher:
         lang = ttk.LabelFrame(middle, text=self.t('language'), padding=8)
         lang.grid(sticky='ew', pady=(0, 8))
         lang.columnconfigure(1, weight=1)
-        self.combo(lang, 0, 'game_language', list(tlg_run.GAME_LANGUAGES), lambda k: GAME_LANGUAGE_NAMES[k])
+        self.game_language_box = self.combo(lang, 0, 'game_language', [], lambda k: k)
+        self.copy_title = None
+        self.update_game_languages()
         self.combo(lang, 1, 'ui_language', UI_LANGUAGES,
                    lambda k: self.t('auto') if k == 'auto' else UI_LANGUAGE_NAMES[k], on_change=self.build)
         video = ttk.LabelFrame(middle, text=self.t('video'), padding=8)
@@ -259,12 +262,34 @@ class Launcher:
         except tk.TclError:
             self.banner = None
 
+    def copy_text(self):
+        """'PC — <TITLE_ID> v<APP_VER>' of the copy in the game folder (the US one's until one is set)."""
+        title = tlg_run.game_title(self.settings['game_dir']) or 'CUSA03694'
+        version = tlg_run.mod_patches.game_app_version(self.settings['game_dir']) or '01.00'
+        return f'PC — {title} v{version}'
+
+    def update_game_languages(self):
+        """The game language list of the copy in the game folder (gr2_run.game_languages), showing
+        the language the game will get (gr2_run.resolve_game_language: the system's when the saved
+        choice was made for another copy)."""
+        title = tlg_run.game_title(self.settings['game_dir'])
+        if title == self.copy_title and self.game_language_box['values']:
+            return
+        self.copy_title = title
+        self.game_language_codes[:] = list(tlg_run.game_languages(self.settings['game_dir']))
+        self.game_language_box['values'] = [GAME_LANGUAGE_NAMES.get(c, c) for c in self.game_language_codes]
+        self.game_language_box.current(self.game_language_codes.index(tlg_run.resolve_game_language(self.settings)))
+        self.title_label.configure(text=self.copy_text())
+
     def combo(self, parent, row, key, values, label, on_change=None):
         ttk.Label(parent, text=self.t(key)).grid(row=row, column=0, sticky='w')
+        if key == 'game_language':
+            self.game_language_codes = values   # filled by update_game_languages
         names = [label(v) for v in values]
         box = ttk.Combobox(parent, values=names, state='readonly', width=28)
-        current = self.settings.get(key, values[0])
-        box.current(values.index(current) if current in values else 0)
+        current = self.settings.get(key, values[0] if values else '')
+        if values:
+            box.current(values.index(current) if current in values else 0)
         box.grid(row=row, column=1, sticky='w', padx=6, pady=2)
 
         def picked(_):
@@ -348,6 +373,7 @@ class Launcher:
             except tk.TclError:
                 pass  # spinbox while typing
         tlg_run.save_settings(self.settings)
+        self.update_game_languages()   # another copy in the game folder: its own languages
         self.refresh_status()
 
     def refresh_status(self):

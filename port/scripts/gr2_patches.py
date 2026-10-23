@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import mod_patches
 
-TITLE_IDS = {'CUSA03694'}
+TITLE_IDS = {'CUSA03694', 'CUSA04943'}  # US, Europe
 SELF_MAGIC = b'O\x15=\x1d'
 
 
