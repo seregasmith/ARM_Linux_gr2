@@ -151,6 +151,13 @@ file(GLOB_RECURSE RECOMPILER CONFIGURE_DEPENDS shadps4/shader_recompiler/*.cpp)
 file(GLOB_RECURSE TLG_SHADER_KEY_SOURCES shadps4/shader_recompiler/*.cpp shadps4/shader_recompiler/*.h)
 list(APPEND TLG_SHADER_KEY_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/shadps4/video_core/amdgpu/resource.h
+    # tlg: the 1D promotion predicates that resource.h and the SPIR-V image emitter read
+    # (IsBlock1D): their code changes which texels a shader samples, without changing the profile
+    # the cache compares.
+    ${CMAKE_CURRENT_SOURCE_DIR}/shadps4/video_core/amdgpu/tlg_block1d.h
+    # tlg: the graphics pipeline writes the host tessellation/discard SPIR-V into its serialized
+    # pipeline entry and decides when to emit it.
+    ${CMAKE_CURRENT_SOURCE_DIR}/shadps4/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp)
 list(SORT TLG_SHADER_KEY_SOURCES)
 set(TLG_SHADER_KEY_DATA "")
@@ -258,6 +265,10 @@ if (WIN32)
     target_compile_options(pad-map-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
     target_include_directories(pad-map-test PRIVATE .. ../src)
     target_link_libraries(pad-map-test PRIVATE PkgConfig::SDL3 bcrypt -pthread)
+    add_executable(mouse-stick-test EXCLUDE_FROM_ALL ../tests/test_mouse_stick.c)
+    set_target_properties(mouse-stick-test PROPERTIES C_STANDARD 11 C_EXTENSIONS OFF)
+    target_compile_options(mouse-stick-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+    target_include_directories(mouse-stick-test PRIVATE .. ../src)
     add_executable(audio-downmix-test EXCLUDE_FROM_ALL ../tests/test_audio_downmix.c ../src/compat_win.c)
     set_target_properties(audio-downmix-test PROPERTIES C_STANDARD 11 C_EXTENSIONS OFF)
     target_compile_options(audio-downmix-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
@@ -360,6 +371,12 @@ target_include_directories(async-compiler-test PRIVATE shadps4)
 add_executable(warmup-inbox-test EXCLUDE_FROM_ALL ../tests/test_warmup_inbox.cpp)
 target_compile_options(warmup-inbox-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(warmup-inbox-test PRIVATE shadps4)
+# tlg: SotC recompiler fixes (LDS barriers, S_WQM_B64); see the test for its env runs.
+add_executable(recompiler-fixes-test EXCLUDE_FROM_ALL ../tests/test_recompiler_fixes.cpp
+    ../tests/test_gpu_runtime_stubs.cpp)
+target_include_directories(recompiler-fixes-test PRIVATE shim shadps4 third_party/gcn/include)
+target_compile_options(recompiler-fixes-test PRIVATE -UNDEBUG -fPIC)
+target_link_libraries(recompiler-fixes-test PRIVATE tlggpu)
 add_executable(async-pipeline-cache-test EXCLUDE_FROM_ALL ../tests/test_async_pipeline_cache.cpp)
 target_compile_options(async-pipeline-cache-test PRIVATE -UNDEBUG)
 target_include_directories(async-pipeline-cache-test PRIVATE shadps4)
@@ -419,6 +436,10 @@ target_include_directories(perf-overlay-test PRIVATE shim)
 target_compile_options(perf-overlay-test PRIVATE -UNDEBUG)
 add_executable(cheat-hooks-test EXCLUDE_FROM_ALL ../tests/test_cheat_hooks.cpp)
 target_compile_options(cheat-hooks-test PRIVATE -UNDEBUG)
+add_executable(wave64-ballot-test EXCLUDE_FROM_ALL ../tests/test_wave64_ballot.cpp ../tests/test_gpu_runtime_stubs.cpp)
+target_include_directories(wave64-ballot-test PRIVATE shim shadps4 third_party/gcn/include)
+target_compile_options(wave64-ballot-test PRIVATE -UNDEBUG -fPIC)
+target_link_libraries(wave64-ballot-test PRIVATE tlggpu)
 add_executable(readback-queue-test EXCLUDE_FROM_ALL ../tests/test_readback_queue.cpp)
 target_include_directories(readback-queue-test PRIVATE shadps4)
 target_compile_options(readback-queue-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
